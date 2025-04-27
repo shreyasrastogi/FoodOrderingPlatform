@@ -49,7 +49,7 @@ namespace FoodOrderingFunctionApp
                 var order = JsonSerializer.Deserialize<Order>(requestBody);
 
                 // Validate the order
-                if (order == null || order.Items == null || !order.Items.Any())
+                if (order == null || order.items == null || !order.items.Any())
                 {
                     var badRequestResponse = req.CreateResponse(System.Net.HttpStatusCode.BadRequest);
                     await badRequestResponse.WriteAsJsonAsync(new { message = "Invalid order format or missing items." });
@@ -57,7 +57,7 @@ namespace FoodOrderingFunctionApp
                 }
 
                 // Calculate the total price
-                order.TotalPrice = order.Items.Sum(item => item.Price * item.Quantity);
+                order.totalPrice = order.items.Sum(item => item.price * item.quantity);
 
                 // Generate a unique Order ID if not provided
                 if (string.IsNullOrEmpty(order.id))
@@ -70,7 +70,7 @@ namespace FoodOrderingFunctionApp
 
                 // Return success response
                 var response = req.CreateResponse(System.Net.HttpStatusCode.OK);
-                await response.WriteAsJsonAsync(new { message = "Order saved successfully", orderId = order.id, totalPrice = order.TotalPrice });
+                await response.WriteAsJsonAsync(new { message = "Order saved successfully", orderId = order.id, totalPrice = order.totalPrice });
                 return response;
             }
             catch (CosmosException ex)
@@ -85,22 +85,22 @@ namespace FoodOrderingFunctionApp
     public class Order
     {
         public string id { get; set; } // Unique identifier for the order
-        public string CustomerName { get; set; } // Customer's name
-        public string PhoneNumber { get; set; } // Customer's phone number
-        public string Email { get; set; } // Customer's email
-        public string Address { get; set; } // Customer's address
-        public List<OrderItem> Items { get; set; } // List of items in the order
-        public double TotalPrice { get; set; } // Calculated as sum of all item prices * quantity
+        public string customerName { get; set; } // Customer's name
+        public string phoneNumber { get; set; } // Customer's phone number
+        public string email { get; set; } // Customer's email
+        public string address { get; set; } // Customer's address
+        public List<orderItem> items { get; set; } // List of items in the order
+        public double totalPrice { get; set; } // Calculated as sum of all item prices * quantity
     }
 
     // Define the OrderItem model
-    public class OrderItem
+    public class orderItem
     {
-        public string ItemName { get; set; } // Name of the item
-        public List<string> Toppings { get; set; } // List of toppings
-        public string Category { get; set; } // Category of the item (e.g., Veg, Non-Veg)
-        public string Size { get; set; } // Size of the item (e.g., Small, Medium, Large)
-        public double Price { get; set; } // Price of the item
-        public int Quantity { get; set; } // Quantity of the item
+        public string itemName { get; set; } // Name of the item
+        public List<string> toppings { get; set; } // List of toppings
+        public string category { get; set; } // Category of the item (e.g., Veg, Non-Veg)
+        public string size { get; set; } // Size of the item (e.g., Small, Medium, Large)
+        public double price { get; set; } // Price of the item
+        public int quantity { get; set; } // Quantity of the item
     }
 }
