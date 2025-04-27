@@ -8,6 +8,9 @@
   </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Azure.Communication.CallAutomation" Version="1.3.0" />
+    <PackageReference Include="Azure.Communication.Common" Version="1.3.0" />
+    <PackageReference Include="Azure.Storage.Blobs" Version="12.24.0" />
     <PackageReference Include="Microsoft.ApplicationInsights.WorkerService" Version="2.22.0" />
     <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.49.0" />
     <PackageReference Include="Microsoft.Azure.Functions.Worker" Version="1.23.0" />
