@@ -6,13 +6,9 @@ using System.Threading.Tasks;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
-using Azure.Communication;
 using Azure.Communication.CallAutomation;
-using Azure.Messaging.EventGrid;
-using Azure.Storage.Blobs;
 using System;
-using System.Collections.Generic;
-using Azure.Messaging.EventGrid.SystemEvents;
+using Azure.Communication;
 
 namespace VoicePizzaBot
 {
@@ -21,11 +17,6 @@ namespace VoicePizzaBot
         private readonly ILogger _logger;
         private readonly CallAutomationClient _callAutomationClient;
         private readonly HttpClient _httpClient;
-
-        // Track silence, language, and AI session per callConnectionId
-        private static Dictionary<string, int> SilenceCounter = new();
-        private static Dictionary<string, string> CallLanguageMap = new();
-        private static Dictionary<string, string> CallSessionMap = new(); // NEW: Track agent sessions
 
         public HandleVoiceCall(ILoggerFactory loggerFactory)
         {
@@ -39,47 +30,81 @@ namespace VoicePizzaBot
             [HttpTrigger(AuthorizationLevel.Anonymous, "post")] HttpRequestData req)
         {
             string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
-            var events = EventGridEvent.ParseMany(BinaryData.FromString(requestBody));
+            _logger.LogInformation($"Received payload: {requestBody}"); // Log the raw payload for debugging
 
-            foreach (var eventGridEvent in events)
+            var events = JsonDocument.Parse(requestBody).RootElement.EnumerateArray();
+
+            foreach (var eventObj in events)
             {
-                if (eventGridEvent.EventType == "Microsoft.EventGrid.SubscriptionValidationEvent")
+                if (!eventObj.TryGetProperty("type", out var eventTypeElement) || eventTypeElement.GetString() is null)
                 {
-                    var data = eventGridEvent.Data.ToObjectFromJson<SubscriptionValidationEventData>();
-                    var response = req.CreateResponse(HttpStatusCode.OK);
-                    await response.WriteAsJsonAsync(new { validationResponse = data.ValidationCode });
-                    return response;
+                    _logger.LogWarning($"Event type is missing or null. Skipping event. Raw event: {eventObj}");
+                    continue;
                 }
-                else if (eventGridEvent.EventType == "Microsoft.Communication.IncomingCall")
+
+                string eventType = eventTypeElement.GetString();
+                _logger.LogInformation($"Processing eventType: {eventType}");
+
+                if (eventType == "Microsoft.Communication.IncomingCall")
                 {
-                    var callEvent = JsonDocument.Parse(eventGridEvent.Data.ToStream()).RootElement;
-                    await HandleIncomingCall(callEvent);
+                    if (eventObj.TryGetProperty("data", out var eventData))
+                    {
+                        await HandleIncomingCall(eventData);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Incoming call event data is missing. Skipping event.");
+                    }
                 }
-                else if (eventGridEvent.EventType == "Microsoft.Communication.RecognizeCompleted")
+                else if (eventType == "Microsoft.Communication.RecognizeCompleted")
                 {
-                    var callEvent = JsonDocument.Parse(eventGridEvent.Data.ToStream()).RootElement;
-                    await HandleRecognizeCompleted(callEvent);
+                    if (eventObj.TryGetProperty("data", out var eventData))
+                    {
+                        await HandleRecognizeCompleted(eventData);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Recognize completed event data is missing. Skipping event.");
+                    }
                 }
-                else if (eventGridEvent.EventType == "Microsoft.Communication.PlayCompleted")
+                else if (eventType == "Microsoft.Communication.CallConnected")
                 {
-                    var callEvent = JsonDocument.Parse(eventGridEvent.Data.ToStream()).RootElement;
-                    await HandlePlayCompleted(callEvent);
+                    _logger.LogInformation("Call connected event received. No action needed.");
                 }
-                else if (eventGridEvent.EventType == "Microsoft.Communication.CallDisconnected")
+                else if (eventType == "Microsoft.Communication.ParticipantsUpdated")
                 {
-                    var callEvent = JsonDocument.Parse(eventGridEvent.Data.ToStream()).RootElement;
-                    await HandleCallDisconnected(callEvent);
+                    _logger.LogInformation("Participants updated event received. No action needed.");
+                }
+                else if (eventType == "Microsoft.Communication.AnswerFailed")
+                {
+                    _logger.LogError("Answer failed event received. Check ACS configuration or logs for details.");
+                }
+                else
+                {
+                    _logger.LogWarning($"Unhandled eventType: {eventType}. Skipping event.");
                 }
             }
 
-            var okResponse = req.CreateResponse(HttpStatusCode.OK);
-            return okResponse;
+            var response = req.CreateResponse(HttpStatusCode.OK);
+            return response;
         }
 
         private async Task HandleIncomingCall(JsonElement callEvent)
         {
-            string incomingCallContext = callEvent.GetProperty("incomingCallContext").GetString();
+            if (!callEvent.TryGetProperty("incomingCallContext", out var incomingCallContextElement) || incomingCallContextElement.GetString() is null)
+            {
+                _logger.LogError("Incoming call context is missing or null.");
+                return;
+            }
+
+            string incomingCallContext = incomingCallContextElement.GetString();
             var callbackUri = Environment.GetEnvironmentVariable("ACS_CALLBACK_URL");
+
+            if (string.IsNullOrEmpty(callbackUri))
+            {
+                _logger.LogError("Callback URI is not configured.");
+                return;
+            }
 
             var acceptResult = await _callAutomationClient.AnswerCallAsync(
                 incomingCallContext,
@@ -89,108 +114,45 @@ namespace VoicePizzaBot
             string callConnectionId = acceptResult.Value.CallConnectionProperties.CallConnectionId;
             var callConnection = _callAutomationClient.GetCallConnection(callConnectionId);
 
-            // Create new AI Agent session
-            string sessionId = await CreateAgentSession();
-            CallSessionMap[callConnectionId] = sessionId;
-
-            _logger.LogInformation($"Call accepted. Created new agent session: {sessionId}");
-
-            // Play welcome audio or directly start speech recognition
+            _logger.LogInformation("Call accepted. Starting speech recognition...");
             await StartSpeechRecognition(callConnection, "en-US");
         }
 
         private async Task HandleRecognizeCompleted(JsonElement callEvent)
         {
-            string callConnectionId = callEvent.GetProperty("callConnectionId").GetString();
-            string recognizedSpeech = callEvent.GetProperty("recognitionResult").GetProperty("speech").GetString();
-
-            var callConnection = _callAutomationClient.GetCallConnection(callConnectionId);
-
-            if (string.IsNullOrEmpty(recognizedSpeech))
+            if (!callEvent.TryGetProperty("callConnectionId", out var callConnectionIdElement) || callConnectionIdElement.GetString() is null)
             {
-                if (!SilenceCounter.ContainsKey(callConnectionId))
-                    SilenceCounter[callConnectionId] = 0;
-
-                SilenceCounter[callConnectionId]++;
-                if (SilenceCounter[callConnectionId] == 1)
-                {
-                    await PlayTextToUser(callConnection, "Sorry, I didn't hear you. Can you repeat?", "en-US");
-                }
-                else
-                {
-                    await PlayTextToUser(callConnection, "Ending the call due to no response. Thank you!", "en-US");
-                    await Task.Delay(3000);
-                    await callConnection.HangUpAsync(true);
-                }
+                _logger.LogError("Call connection ID is missing or null.");
                 return;
             }
 
-            if (!CallLanguageMap.ContainsKey(callConnectionId))
+            string callConnectionId = callConnectionIdElement.GetString();
+
+            if (!callEvent.TryGetProperty("recognitionResult", out var recognitionResult) ||
+                !recognitionResult.TryGetProperty("speech", out var speechElement) ||
+                speechElement.GetString() is null)
             {
-                string detectedLanguage = await DetectLanguage(recognizedSpeech);
-                CallLanguageMap[callConnectionId] = detectedLanguage;
+                _logger.LogWarning("Recognition result or speech is missing or null.");
+                return;
             }
 
-            string languageCode = CallLanguageMap[callConnectionId];
-            if (SilenceCounter.ContainsKey(callConnectionId)) SilenceCounter[callConnectionId] = 0;
+            string recognizedSpeech = speechElement.GetString();
+            _logger.LogInformation($"User said: {recognizedSpeech}");
 
-            // Send to AI Agent
-            string agentResponse = await GetAgentResponseFromAI(callConnectionId, recognizedSpeech);
+            // Forward user input to Azure AI agent
+            string agentResponse = await GetAgentResponseFromAI(recognizedSpeech);
 
-            var audioUrl = await GenerateSpeechAndUploadToBlob(agentResponse, callConnectionId, languageCode);
-            await callConnection.GetCallMedia().PlayToAllAsync(new PlayToAllOptions(new FileSource(new Uri(audioUrl))));
-        }
-
-        private async Task HandlePlayCompleted(JsonElement callEvent)
-        {
-            string callConnectionId = callEvent.GetProperty("callConnectionId").GetString();
+            // Play the AI agent's response back to the caller
             var callConnection = _callAutomationClient.GetCallConnection(callConnectionId);
-
-            string languageCode = CallLanguageMap.ContainsKey(callConnectionId) ? CallLanguageMap[callConnectionId] : "en-US";
-
-            await StartSpeechRecognition(callConnection, languageCode);
+            await PlayTextToUser(callConnection, agentResponse, "en-US");
         }
 
-        private async Task HandleCallDisconnected(JsonElement callEvent)
-        {
-            string callConnectionId = callEvent.GetProperty("callConnectionId").GetString();
-
-            // Cleanup Agent session
-            if (CallSessionMap.ContainsKey(callConnectionId))
-            {
-                string sessionId = CallSessionMap[callConnectionId];
-                await DeleteAgentSession(sessionId);
-                CallSessionMap.Remove(callConnectionId);
-            }
-
-            var blobConnectionString = Environment.GetEnvironmentVariable("BLOB_STORAGE_CONNECTION_STRING");
-            var blobContainerName = Environment.GetEnvironmentVariable("BLOB_CONTAINER_NAME");
-
-            var blobServiceClient = new BlobServiceClient(blobConnectionString);
-            var containerClient = blobServiceClient.GetBlobContainerClient(blobContainerName);
-            var blobClient = containerClient.GetBlobClient($"session-{callConnectionId}.wav");
-
-            await blobClient.DeleteIfExistsAsync();
-        }
-
-        private async Task<string> CreateAgentSession()
+        private async Task<string> GetAgentResponseFromAI(string userInput)
         {
             var agentEndpoint = Environment.GetEnvironmentVariable("AI_AGENT_ENDPOINT");
-            var response = await _httpClient.PostAsync($"{agentEndpoint}/sessions", null);
-            response.EnsureSuccessStatusCode();
-
-            var content = await response.Content.ReadAsStringAsync();
-            var jsonDoc = JsonDocument.Parse(content);
-            return jsonDoc.RootElement.GetProperty("sessionId").GetString();
-        }
-
-        private async Task<string> GetAgentResponseFromAI(string callConnectionId, string userInput)
-        {
-            var agentEndpoint = Environment.GetEnvironmentVariable("AI_AGENT_ENDPOINT");
-            string sessionId = CallSessionMap.ContainsKey(callConnectionId) ? CallSessionMap[callConnectionId] : "";
-
             var payload = new { input = userInput };
-            var response = await _httpClient.PostAsJsonAsync($"{agentEndpoint}/sessions/{sessionId}/messages", payload);
+
+            var response = await _httpClient.PostAsJsonAsync($"{agentEndpoint}/messages", payload);
             response.EnsureSuccessStatusCode();
 
             var content = await response.Content.ReadAsStringAsync();
@@ -198,16 +160,15 @@ namespace VoicePizzaBot
             return jsonDoc.RootElement.GetProperty("response").GetString() ?? "Sorry, I did not understand that.";
         }
 
-        private async Task DeleteAgentSession(string sessionId)
-        {
-            var agentEndpoint = Environment.GetEnvironmentVariable("AI_AGENT_ENDPOINT");
-            await _httpClient.DeleteAsync($"{agentEndpoint}/sessions/{sessionId}");
-        }
-
         private async Task PlayTextToUser(CallConnection callConnection, string text, string languageCode)
         {
-            var audioUrl = await GenerateSpeechAndUploadToBlob(text, callConnection.CallConnectionId, languageCode);
-            await callConnection.GetCallMedia().PlayToAllAsync(new PlayToAllOptions(new FileSource(new Uri(audioUrl))));
+            var playSource = new TextSource(text);
+            var playOptions = new PlayToAllOptions(playSource)
+            {
+                Loop = false
+            };
+
+            await callConnection.GetCallMedia().PlayToAllAsync(playOptions);
         }
 
         private async Task StartSpeechRecognition(CallConnection callConnection, string languageCode)
@@ -219,67 +180,8 @@ namespace VoicePizzaBot
                 SpeechLanguage = languageCode,
                 InitialSilenceTimeout = TimeSpan.FromSeconds(5)
             };
+
             await callConnection.GetCallMedia().StartRecognizingAsync(recognizeOptions);
-        }
-
-        private async Task<string> GenerateSpeechAndUploadToBlob(string text, string sessionId, string languageCode)
-        {
-            var subscriptionKey = Environment.GetEnvironmentVariable("AZURE_TTS_KEY");
-            var ttsEndpoint = Environment.GetEnvironmentVariable("AZURE_TTS_ENDPOINT");
-
-            string voice = languageCode switch
-            {
-                "fr" => "fr-FR-DeniseNeural",
-                "hi" => "hi-IN-MadhurNeural",
-                _ => "en-US-AriaNeural"
-            };
-
-            var requestBody = @$"
-                <speak version='1.0' xml:lang='{languageCode}'>
-                    <voice name='{voice}'>{text}</voice>
-                </speak>";
-
-            using var ttsRequest = new HttpRequestMessage(HttpMethod.Post, ttsEndpoint);
-            ttsRequest.Headers.Add("Ocp-Apim-Subscription-Key", subscriptionKey);
-            ttsRequest.Headers.Add("X-Microsoft-OutputFormat", "riff-16khz-16bit-mono-pcm");
-            ttsRequest.Content = new StringContent(requestBody);
-            ttsRequest.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/ssml+xml");
-
-            var ttsResponse = await _httpClient.SendAsync(ttsRequest);
-            ttsResponse.EnsureSuccessStatusCode();
-
-            var audioStream = await ttsResponse.Content.ReadAsStreamAsync();
-
-            var blobConnectionString = Environment.GetEnvironmentVariable("BLOB_STORAGE_CONNECTION_STRING");
-            var blobContainerName = Environment.GetEnvironmentVariable("BLOB_CONTAINER_NAME");
-
-            var blobServiceClient = new BlobServiceClient(blobConnectionString);
-            var containerClient = blobServiceClient.GetBlobContainerClient(blobContainerName);
-            var blobClient = containerClient.GetBlobClient($"session-{sessionId}.wav");
-
-            await blobClient.UploadAsync(audioStream, overwrite: true);
-
-            return blobClient.Uri.ToString();
-        }
-
-        private async Task<string> DetectLanguage(string text)
-        {
-            var subscriptionKey = Environment.GetEnvironmentVariable("AZURE_TRANSLATOR_KEY");
-            var region = Environment.GetEnvironmentVariable("AZURE_TRANSLATOR_REGION");
-
-            var url = "https://api.cognitive.microsofttranslator.com/detect?api-version=3.0";
-
-            var requestBody = JsonSerializer.Serialize(new[] { new { Text = text } });
-            using var request = new HttpRequestMessage(HttpMethod.Post, url);
-            request.Content = new StringContent(requestBody, System.Text.Encoding.UTF8, "application/json");
-            request.Headers.Add("Ocp-Apim-Subscription-Key", subscriptionKey);
-            request.Headers.Add("Ocp-Apim-Subscription-Region", region);
-
-            var response = await _httpClient.SendAsync(request);
-            var responseBody = await response.Content.ReadAsStringAsync();
-            var jsonDoc = JsonDocument.Parse(responseBody);
-
-            return jsonDoc.RootElement[0].GetProperty("language").GetString() ?? "en";
         }
     }
 }
