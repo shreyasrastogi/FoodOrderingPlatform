@@ -1,12 +1,26 @@
 {
-    "version": "3.0",
-    "logging": {
-        "applicationInsights": {
-            "samplingSettings": {
-                "isEnabled": true,
-                "excludedTypes": "Request"
-            },
-            "enableLiveMetricsFilters": true
-        }
+  "version": "2.0",
+  "logging": {
+    "applicationInsights": {
+      "samplingSettings": {
+        "isEnabled": true,
+        "excludedTypes": "Request"
+      },
+      "enableLiveMetricsFilters": true
     }
+  },
+  "extensions": {
+    "openApi": {
+      "enabled": true,
+      "includeRequestingHostName": true,
+      "forceHttp": false,
+      "documentVersion": "3.0.1",
+      "documentTitle": "Your API Title",
+      "documentDescription": "API for managing pizza orders",
+      "documentContactName": "Shreyas Rastogi",
+      "documentContactEmail": "shreyasrastogi@gmail.com",
+      "documentLicenseName": "MIT",
+      "documentLicenseUrl": "https://opensource.org/licenses/MIT"
+    }
+  }
 }
