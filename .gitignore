@@ -1,0 +1,11 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/FoodOrderingFunctionApp/.vs/FoodOrderingFunctionApp/FileContentIndex
+/FoodOrderingFunctionApp/.vs/FoodOrderingFunctionApp/copilot-chat/184f9cdc/sessions
+/FoodOrderingFunctionApp/.vs/FoodOrderingFunctionApp/CopilotIndices/17.13.444.19527
+/FoodOrderingFunctionApp/.vs/FoodOrderingFunctionApp/DesignTimeBuild
+/FoodOrderingFunctionApp/.vs/FoodOrderingFunctionApp/v17/TestStore/0
+/FoodOrderingFunctionApp/.vs/FoodOrderingFunctionApp/v17
+/FoodOrderingFunctionApp/.vs/ProjectEvaluation
