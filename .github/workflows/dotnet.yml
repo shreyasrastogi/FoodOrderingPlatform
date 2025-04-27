@@ -1,0 +1,45 @@
+# This workflow will build, test, and deploy a .NET Azure Function App
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-net
+
+name: .NET
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-deploy:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    # Step 1: Checkout the code
+    - uses: actions/checkout@v4
+
+    # Step 2: Setup .NET
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+
+    # Step 3: Restore dependencies
+    - name: Restore dependencies
+      run: dotnet restore
+
+    # Step 4: Build the project
+    - name: Build
+      run: dotnet build --no-restore
+
+    # Step 5: Run tests
+    - name: Test
+      run: dotnet test --no-build --verbosity normal
+
+    # Step 6: Deploy to Azure Function App
+    - name: Deploy to Azure Function App
+      uses: azure/functions-action@v1
+      with:
+        app-name: <your-function-app-name> # Replace with your Azure Function App name
+        package: '.' # Path to the project folder
+        publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
