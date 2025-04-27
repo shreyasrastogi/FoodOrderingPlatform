@@ -1,4 +1,5 @@
 ﻿using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -7,6 +8,8 @@ using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
 using Azure.Communication;
 using Azure.Communication.CallAutomation;
+using Azure.Messaging.EventGrid;
+using Azure.Messaging.EventGrid.SystemEvents;
 using Azure.Storage.Blobs;
 using System;
 using System.Collections.Generic;
@@ -21,7 +24,7 @@ namespace VoicePizzaBot
 
         // Track silence and language per callConnectionId
         private static Dictionary<string, int> SilenceCounter = new();
-        private static Dictionary<string, string> CallLanguageMap = new(); // Language map
+        private static Dictionary<string, string> CallLanguageMap = new();
 
         public HandleVoiceCall(ILoggerFactory loggerFactory)
         {
@@ -35,36 +38,50 @@ namespace VoicePizzaBot
             [HttpTrigger(AuthorizationLevel.Anonymous, "post")] HttpRequestData req)
         {
             string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
-            var callEvent = JsonDocument.Parse(requestBody).RootElement;
+            var events = EventGridEvent.ParseMany(BinaryData.FromString(requestBody));
 
-            string eventType = callEvent.GetProperty("eventType").GetString() ?? string.Empty;
-            _logger.LogInformation($"Received eventType: {eventType}");
-
-            switch (eventType)
+            foreach (var eventGridEvent in events)
             {
-                case "Microsoft.Communication.IncomingCall":
+                if (eventGridEvent.EventType == "Microsoft.EventGrid.SubscriptionValidationEvent")
+                {
+                    _logger.LogInformation("Received SubscriptionValidationEvent.");
+
+                    var data = eventGridEvent.Data.ToObjectFromJson<SubscriptionValidationEventData>();
+                    var response = req.CreateResponse(HttpStatusCode.OK);
+                    await response.WriteAsJsonAsync(new
+                    {
+                        validationResponse = data.ValidationCode
+                    });
+                    return response;
+                }
+                else if (eventGridEvent.EventType == "Microsoft.Communication.IncomingCall")
+                {
+                    var callEvent = JsonDocument.Parse(eventGridEvent.Data.ToStream()).RootElement;
                     await HandleIncomingCall(callEvent);
-                    break;
-
-                case "Microsoft.Communication.RecognizeCompleted":
+                }
+                else if (eventGridEvent.EventType == "Microsoft.Communication.RecognizeCompleted")
+                {
+                    var callEvent = JsonDocument.Parse(eventGridEvent.Data.ToStream()).RootElement;
                     await HandleRecognizeCompleted(callEvent);
-                    break;
-
-                case "Microsoft.Communication.PlayCompleted":
+                }
+                else if (eventGridEvent.EventType == "Microsoft.Communication.PlayCompleted")
+                {
+                    var callEvent = JsonDocument.Parse(eventGridEvent.Data.ToStream()).RootElement;
                     await HandlePlayCompleted(callEvent);
-                    break;
-
-                case "Microsoft.Communication.CallDisconnected":
+                }
+                else if (eventGridEvent.EventType == "Microsoft.Communication.CallDisconnected")
+                {
+                    var callEvent = JsonDocument.Parse(eventGridEvent.Data.ToStream()).RootElement;
                     await HandleCallDisconnected(callEvent);
-                    break;
-
-                default:
-                    _logger.LogInformation($"Unhandled eventType: {eventType}");
-                    break;
+                }
+                else
+                {
+                    _logger.LogInformation($"Unhandled eventType: {eventGridEvent.EventType}");
+                }
             }
 
-            var response = req.CreateResponse(System.Net.HttpStatusCode.OK);
-            return response;
+            var okResponse = req.CreateResponse(HttpStatusCode.OK);
+            return okResponse;
         }
 
         private async Task HandleIncomingCall(JsonElement callEvent)
@@ -82,7 +99,6 @@ namespace VoicePizzaBot
             string callConnectionId = acceptResult.Value.CallConnectionProperties.CallConnectionId;
             var callConnection = _callAutomationClient.GetCallConnection(callConnectionId);
 
-            // Play welcome audio
             var playSource = new FileSource(new Uri("https://yourstorageaccount.blob.core.windows.net/audiofiles/welcome.wav"));
             var playOptions = new PlayToAllOptions(playSource)
             {
@@ -92,8 +108,7 @@ namespace VoicePizzaBot
             await callConnection.GetCallMedia().PlayToAllAsync(playOptions);
             _logger.LogInformation("Played welcome audio.");
 
-            // Start recognizing speech
-            await StartSpeechRecognition(callConnection, "en-US"); // Start with English
+            await StartSpeechRecognition(callConnection, "en-US");
         }
 
         private async Task HandleRecognizeCompleted(JsonElement callEvent)
@@ -124,13 +139,11 @@ namespace VoicePizzaBot
                     await Task.Delay(3000);
                     await callConnection.HangUpAsync(true);
                 }
-
                 return;
             }
 
             if (!CallLanguageMap.ContainsKey(callConnectionId))
             {
-                // Detect language first time
                 string detectedLanguage = await DetectLanguage(recognizedSpeech);
                 CallLanguageMap[callConnectionId] = detectedLanguage;
                 _logger.LogInformation($"Detected Language: {detectedLanguage}");
@@ -138,11 +151,9 @@ namespace VoicePizzaBot
 
             string languageCode = CallLanguageMap[callConnectionId];
 
-            // Reset silence counter if user speaks
             if (SilenceCounter.ContainsKey(callConnectionId))
                 SilenceCounter[callConnectionId] = 0;
 
-            // Normal flow: Generate AI response and play
             var audioUrl = await GenerateSpeechAndUploadToBlob(recognizedSpeech, callConnectionId, languageCode);
 
             var playSource = new FileSource(new Uri(audioUrl));
@@ -193,7 +204,7 @@ namespace VoicePizzaBot
         private async Task<string> GenerateSpeechAndUploadToBlob(string text, string sessionId, string languageCode)
         {
             var subscriptionKey = Environment.GetEnvironmentVariable("AZURE_TTS_KEY");
-            var region = Environment.GetEnvironmentVariable("AZURE_TTS_REGION");
+            var ttsEndpoint = Environment.GetEnvironmentVariable("AZURE_TTS_ENDPOINT");
 
             string voice = languageCode switch
             {
@@ -202,7 +213,6 @@ namespace VoicePizzaBot
                 _ => "en-US-AriaNeural"
             };
 
-            var ttsEndpoint = Environment.GetEnvironmentVariable("AZURE_TTS_ENDPOINT");
             var requestBody = @$"
                 <speak version='1.0' xml:lang='{languageCode}'>
                     <voice name='{voice}'>{text}</voice>
@@ -266,6 +276,7 @@ namespace VoicePizzaBot
             var url = "https://api.cognitive.microsofttranslator.com/detect?api-version=3.0";
 
             var requestBody = JsonSerializer.Serialize(new[] { new { Text = text } });
+
             using var request = new HttpRequestMessage(HttpMethod.Post, url);
             request.Content = new StringContent(requestBody, System.Text.Encoding.UTF8, "application/json");
             request.Headers.Add("Ocp-Apim-Subscription-Key", subscriptionKey);
