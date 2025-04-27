@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "FoodOrderingFunctionApp": {
+      "commandName": "Project",
+      "commandLineArgs": "--port 7223",
+      "launchBrowser": false
+    }
+  }
+}
