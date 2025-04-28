@@ -1,4 +1,7 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using System;
+using System.IO;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.AspNetCore.Http;
@@ -7,24 +10,17 @@ using Newtonsoft.Json;
 using Azure;
 using Azure.Identity;
 using Azure.AI.Projects;
-using Microsoft.OpenApi.Models;
-using Microsoft.Azure.WebJobs.Extensions.OpenApi.Core.Attributes;
 
 namespace FoodOrderingFunctionApp
 {
     public static class TalkToAgentFunction
     {
         [FunctionName("TalkToAgent")]
-        [OpenApiOperation(operationId: "TalkToAgent", tags: new[] { "Agent" }, Summary = "Talk to AI Agent", Description = "Sends a message to the AI agent and retrieves a response.")]
-        [OpenApiRequestBody(contentType: "application/json", bodyType: typeof(TalkToAgentRequest), Required = true, Description = "User input for the AI agent")]
-        [OpenApiResponseWithBody(statusCode: System.Net.HttpStatusCode.OK, contentType: "application/json", bodyType: typeof(TalkToAgentResponse), Description = "Response from the AI agent")]
-        [OpenApiResponseWithBody(statusCode: System.Net.HttpStatusCode.BadRequest, contentType: "application/json", bodyType: typeof(object), Description = "Invalid input")]
-        [OpenApiResponseWithBody(statusCode: System.Net.HttpStatusCode.InternalServerError, contentType: "application/json", bodyType: typeof(object), Description = "Internal server error")]
         public static async Task<IActionResult> Run(
             [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = null)] HttpRequest req,
             ILogger log)
         {
-            log.LogInformation("Received request to talk to AI Agent.");
+            log.LogInformation("TalkToAgent function received a request.");
 
             string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
             var data = JsonConvert.DeserializeObject<TalkToAgentRequest>(requestBody);
@@ -42,20 +38,16 @@ namespace FoodOrderingFunctionApp
 
             try
             {
-                // Retrieve agent and thread
                 Response<Agent> agentResponse = await client.GetAgentAsync(agentId);
                 Response<AgentThread> threadResponse = await client.GetThreadAsync(threadId);
 
-                // Create a new message in the thread
                 Response<ThreadMessage> messageResponse = await client.CreateMessageAsync(
                     threadId,
                     MessageRole.User,
                     data.Input);
 
-                // Start a run for the agent
                 Response<ThreadRun> runResponse = await client.CreateRunAsync(threadId, agentId);
 
-                // Poll until the run is completed
                 do
                 {
                     await Task.Delay(500);
@@ -63,11 +55,9 @@ namespace FoodOrderingFunctionApp
                 }
                 while (runResponse.Value.Status == RunStatus.Queued || runResponse.Value.Status == RunStatus.InProgress);
 
-                // Get updated messages
                 Response<PageableList<ThreadMessage>> messagesResponse = await client.GetMessagesAsync(threadId);
                 IReadOnlyList<ThreadMessage> messages = messagesResponse.Value.Data;
 
-                // Find the latest assistant message
                 string agentReply = null;
                 foreach (var threadMessage in messages)
                 {
