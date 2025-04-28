@@ -1,21 +1,25 @@
-﻿using System;
-using System.IO;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
-using Azure.AI.Projects;
 using Azure;
 using Azure.Identity;
+using Azure.AI.Projects;
+using Microsoft.OpenApi.Models;
+using Microsoft.Azure.WebJobs.Extensions.OpenApi.Core.Attributes;
 
-namespace AgentFunction
+namespace FoodOrderingFunctionApp
 {
-    public static class AgentServiceFunction
+    public static class TalkToAgentFunction
     {
         [FunctionName("TalkToAgent")]
+        [OpenApiOperation(operationId: "TalkToAgent", tags: new[] { "Agent" }, Summary = "Talk to AI Agent", Description = "Sends a message to the AI agent and retrieves a response.")]
+        [OpenApiRequestBody(contentType: "application/json", bodyType: typeof(TalkToAgentRequest), Required = true, Description = "User input for the AI agent")]
+        [OpenApiResponseWithBody(statusCode: System.Net.HttpStatusCode.OK, contentType: "application/json", bodyType: typeof(TalkToAgentResponse), Description = "Response from the AI agent")]
+        [OpenApiResponseWithBody(statusCode: System.Net.HttpStatusCode.BadRequest, contentType: "application/json", bodyType: typeof(object), Description = "Invalid input")]
+        [OpenApiResponseWithBody(statusCode: System.Net.HttpStatusCode.InternalServerError, contentType: "application/json", bodyType: typeof(object), Description = "Internal server error")]
         public static async Task<IActionResult> Run(
             [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = null)] HttpRequest req,
             ILogger log)
@@ -23,12 +27,11 @@ namespace AgentFunction
             log.LogInformation("Received request to talk to AI Agent.");
 
             string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
-            dynamic data = JsonConvert.DeserializeObject(requestBody);
+            var data = JsonConvert.DeserializeObject<TalkToAgentRequest>(requestBody);
 
-            string userInput = data?.input;
-            if (string.IsNullOrEmpty(userInput))
+            if (data == null || string.IsNullOrEmpty(data.Input))
             {
-                return new BadRequestObjectResult("Please pass an 'input' string in the request body.");
+                return new BadRequestObjectResult(new { message = "Please pass a valid 'input' string in the request body." });
             }
 
             var connectionString = "eastus.api.azureml.ms;864dfcb3-c1b9-493d-8751-2774190cb56a;fooddeliveryplatform;foodorderingplatform";
@@ -39,15 +42,18 @@ namespace AgentFunction
 
             try
             {
+                // Retrieve agent and thread
+                Response<Agent> agentResponse = await client.GetAgentAsync(agentId);
+                Response<AgentThread> threadResponse = await client.GetThreadAsync(threadId);
+
                 // Create a new message in the thread
                 Response<ThreadMessage> messageResponse = await client.CreateMessageAsync(
                     threadId,
                     MessageRole.User,
-                    userInput);
+                    data.Input);
 
                 // Start a run for the agent
                 Response<ThreadRun> runResponse = await client.CreateRunAsync(threadId, agentId);
-                ThreadRun run = runResponse.Value;
 
                 // Poll until the run is completed
                 do
@@ -80,11 +86,11 @@ namespace AgentFunction
 
                 if (agentReply != null)
                 {
-                    return new OkObjectResult(new { response = agentReply });
+                    return new OkObjectResult(new TalkToAgentResponse { Response = agentReply });
                 }
                 else
                 {
-                    return new OkObjectResult(new { response = "No reply received from agent." });
+                    return new OkObjectResult(new TalkToAgentResponse { Response = "No reply received from agent." });
                 }
             }
             catch (Exception ex)
@@ -93,5 +99,15 @@ namespace AgentFunction
                 return new StatusCodeResult(500);
             }
         }
+    }
+
+    public class TalkToAgentRequest
+    {
+        public string Input { get; set; }
+    }
+
+    public class TalkToAgentResponse
+    {
+        public string Response { get; set; }
     }
 }
