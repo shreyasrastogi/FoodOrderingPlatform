@@ -7,9 +7,16 @@
         "excludedTypes": "Request"
       },
       "enableLiveMetricsFilters": true
+    },
+    "logLevel": {
+      "default": "Information",
+      "Function": "Information"
     }
   },
   "extensions": {
+    "http": {
+      "routePrefix": ""
+    },
     "openApi": {
       "enabled": true,
       "includeRequestingHostName": true,

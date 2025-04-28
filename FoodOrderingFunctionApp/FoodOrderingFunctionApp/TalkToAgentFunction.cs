@@ -1,10 +1,8 @@
 ﻿using System;
 using System.IO;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.Azure.WebJobs;
-using Microsoft.Azure.WebJobs.Extensions.Http;
-using Microsoft.AspNetCore.Http;
+using Microsoft.Azure.Functions.Worker;
+using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Azure;
@@ -15,11 +13,12 @@ namespace FoodOrderingFunctionApp
 {
     public static class TalkToAgentFunction
     {
-        [FunctionName("TalkToAgent")]
-        public static async Task<IActionResult> Run(
-            [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = null)] HttpRequest req,
-            ILogger log)
+        [Function("TalkToAgent")]
+        public static async Task<HttpResponseData> Run(
+            [HttpTrigger(AuthorizationLevel.Anonymous, "post")] HttpRequestData req,
+            FunctionContext context)
         {
+            var log = context.GetLogger("TalkToAgent");
             log.LogInformation("TalkToAgent function received a request.");
 
             string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
@@ -27,7 +26,9 @@ namespace FoodOrderingFunctionApp
 
             if (data == null || string.IsNullOrEmpty(data.Input))
             {
-                return new BadRequestObjectResult(new { message = "Please pass a valid 'input' string in the request body." });
+                var badRequestResponse = req.CreateResponse(System.Net.HttpStatusCode.BadRequest);
+                await badRequestResponse.WriteAsJsonAsync(new { message = "Please pass a valid 'input' string in the request body." });
+                return badRequestResponse;
             }
 
             var connectionString = "eastus.api.azureml.ms;864dfcb3-c1b9-493d-8751-2774190cb56a;fooddeliveryplatform;foodorderingplatform";
@@ -74,19 +75,16 @@ namespace FoodOrderingFunctionApp
                     }
                 }
 
-                if (agentReply != null)
-                {
-                    return new OkObjectResult(new TalkToAgentResponse { Response = agentReply });
-                }
-                else
-                {
-                    return new OkObjectResult(new TalkToAgentResponse { Response = "No reply received from agent." });
-                }
+                var response = req.CreateResponse(System.Net.HttpStatusCode.OK);
+                await response.WriteAsJsonAsync(new TalkToAgentResponse { Response = agentReply ?? "No reply received from agent." });
+                return response;
             }
             catch (Exception ex)
             {
                 log.LogError($"Error communicating with Agent: {ex.Message}");
-                return new StatusCodeResult(500);
+                var errorResponse = req.CreateResponse(System.Net.HttpStatusCode.InternalServerError);
+                await errorResponse.WriteAsJsonAsync(new { message = "An error occurred while processing your request." });
+                return errorResponse;
             }
         }
     }
